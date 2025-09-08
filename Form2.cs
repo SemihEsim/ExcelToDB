@@ -10,6 +10,7 @@ using NPOI.SS.UserModel;
 using NPOI.XSSF.UserModel;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Threading.Tasks;
 
 namespace ExcelToDB
 {
@@ -21,6 +22,9 @@ namespace ExcelToDB
         {
             InitializeComponent();
             connectionString = connStr;
+
+            // Form kapanırken uygulama da kapansın
+            this.FormClosing += Form2_FormClosing;
         }
 
         private void Form2_Load(object sender, EventArgs e)
@@ -28,7 +32,6 @@ namespace ExcelToDB
             LoadDatabases();
         }
 
-       
         private void LoadDatabases()
         {
             try
@@ -100,7 +103,7 @@ namespace ExcelToDB
                 using (var connection = new SqlConnection(builder.ConnectionString))
                 {
                     connection.Open();
-                    var query = $"SELECT TOP 100 * FROM [{selectedTable}]";
+                    var query = $"SELECT TOP 5000 * FROM [{selectedTable}]";
                     using (var adapter = new SqlDataAdapter(query, connection))
                     {
                         var dt = new DataTable();
@@ -115,7 +118,8 @@ namespace ExcelToDB
             }
         }
 
-        private void btnImportExcel_Click(object sender, EventArgs e)
+       
+        private async void btnImportExcel_Click(object sender, EventArgs e)
         {
             if (cmbDatabases.SelectedItem == null || lstTables.SelectedItem == null)
             {
@@ -127,17 +131,34 @@ namespace ExcelToDB
             {
                 if (ofd.ShowDialog() == DialogResult.OK)
                 {
-                    ImportExcelToDatabase(ofd.FileName);
+                    try
+                    {
+                        
+                        button1.Enabled = false;
+
+                        
+                        await Task.Run(() => ImportExcelToDatabase(ofd.FileName));
+                    }
+                    finally
+                    {
+                        
+                        button1.Enabled = true;
+                    }
                 }
             }
         }
-        
 
         private void ImportExcelToDatabase(string filePath)
         {
             var stopwatch = Stopwatch.StartNew();
-            string selectedDB = cmbDatabases.SelectedItem.ToString();
-            string realTable = lstTables.SelectedItem.ToString();
+            string selectedDB = cmbDatabases.InvokeRequired
+                ? (string)cmbDatabases.Invoke(new Func<string>(() => cmbDatabases.SelectedItem.ToString()))
+                : cmbDatabases.SelectedItem.ToString();
+
+            string realTable = lstTables.InvokeRequired
+                ? (string)lstTables.Invoke(new Func<string>(() => lstTables.SelectedItem.ToString()))
+                : lstTables.SelectedItem.ToString();
+
             var builder = new SqlConnectionStringBuilder(connectionString) { InitialCatalog = selectedDB };
             string stagingTable = $"##Staging_{Guid.NewGuid():N}";
             DataTable dt = new DataTable();
@@ -148,17 +169,24 @@ namespace ExcelToDB
                 conn.Open();
                 try
                 {
-                    // Excel okuma ve satır satır kontrol
+                    // Excel okuma
                     using (FileStream file = new FileStream(filePath, FileMode.Open, FileAccess.Read))
                     {
-                        IWorkbook workbook = Path.GetExtension(filePath).Equals(".xlsx", StringComparison.OrdinalIgnoreCase) ? (IWorkbook)new XSSFWorkbook(file) : new HSSFWorkbook(file);
+                        IWorkbook workbook = Path.GetExtension(filePath).Equals(".xlsx", StringComparison.OrdinalIgnoreCase)
+                            ? (IWorkbook)new XSSFWorkbook(file)
+                            : new HSSFWorkbook(file);
+
                         ISheet sheet = workbook.GetSheetAt(0);
                         IRow headerRow = sheet.GetRow(sheet.FirstRowNum);
-                        for (int j = 0; j < headerRow.LastCellNum; j++) dt.Columns.Add(headerRow.GetCell(j)?.ToString().Trim() ?? $"Sütun{j}");
+
+                        for (int j = 0; j < headerRow.LastCellNum; j++)
+                            dt.Columns.Add(headerRow.GetCell(j)?.ToString().Trim() ?? $"Sütun{j}");
+
                         for (int i = sheet.FirstRowNum + 1; i <= sheet.LastRowNum; i++)
                         {
                             IRow row = sheet.GetRow(i);
                             if (row == null || row.Cells.All(c => c == null || c.CellType == CellType.Blank)) continue;
+
                             DataRow dr = dt.NewRow();
                             for (int j = 0; j < dt.Columns.Count; j++)
                             {
@@ -169,11 +197,16 @@ namespace ExcelToDB
                         }
                     }
 
-                    if (dt.Rows.Count == 0) { MessageBox.Show("Excel dosyasında işlenecek veri bulunamadı."); return;}
+                    if (dt.Rows.Count == 0)
+                    {
+                        MessageBox.Show("Excel dosyasında işlenecek veri bulunamadı.");
+                        return;
+                    }
 
-                    // Geçici tablo oluşturma
+                    // staging table
                     string createScript = $"SELECT TOP 0 * INTO {stagingTable} FROM [{realTable}]";
                     using (SqlCommand createCmd = new SqlCommand(createScript, conn)) createCmd.ExecuteNonQuery();
+
                     int excelRowNumber = 1;
                     foreach (DataRow dr in dt.Rows)
                     {
@@ -183,6 +216,7 @@ namespace ExcelToDB
                             var columnNames = string.Join(", ", dt.Columns.Cast<DataColumn>().Select(c => $"[{c.ColumnName}]"));
                             var parameterNames = string.Join(", ", dt.Columns.Cast<DataColumn>().Select(c => $"@{c.ColumnName.Replace(" ", "").Replace("-", "")}"));
                             string insertSql = $"INSERT INTO {stagingTable} ({columnNames}) VALUES ({parameterNames})";
+
                             using (SqlCommand insertCmd = new SqlCommand(insertSql, conn))
                             {
                                 foreach (DataColumn col in dt.Columns)
@@ -198,51 +232,44 @@ namespace ExcelToDB
                         }
                     }
 
-                    // Hata kontrolü
                     if (errorMessages.Any())
                     {
                         stopwatch.Stop();
+                        MessageBox.Show($"İşlem başarısız. {errorMessages.Count} hata bulundu. Veritabanına kayıt yapılmadı.\nSüre: {stopwatch.Elapsed:m\\:ss\\.fff}");
 
-                        var summaryMessage = new StringBuilder();
-                        summaryMessage.AppendLine($"İşlem başarısız. {errorMessages.Count} adet hata bulundu.");
-                        summaryMessage.AppendLine("Veritabanına hiçbir veri kaydedilmedi.");
-                        summaryMessage.AppendLine($"\nGeçen süre: {stopwatch.Elapsed:m\\:ss\\.fff}");
-                        MessageBox.Show(summaryMessage.ToString(), "İşlem İptal Edildi", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-
-                        
                         Form3 errorForm = new Form3(errorMessages);
                         errorForm.ShowDialog();
                     }
                     else
                     {
-                        // Başarılı durumda veri kaydı
                         var insertColumns = string.Join(", ", dt.Columns.Cast<DataColumn>().Select(c => $"[{c.ColumnName}]"));
                         using (SqlCommand finalInsertCmd = new SqlCommand($"INSERT INTO [{realTable}] ({insertColumns}) SELECT {insertColumns} FROM {stagingTable}", conn))
                         {
                             int insertedCount = finalInsertCmd.ExecuteNonQuery();
                             stopwatch.Stop();
-                            string successMessage = $"İşlem tamamlandı. {insertedCount} satır başarıyla eklendi.\n\nGeçen süre: {stopwatch.Elapsed:m\\:ss\\.fff}";
-                            MessageBox.Show(successMessage, "Başarılı", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                            MessageBox.Show($"İşlem tamamlandı. {insertedCount} satır eklendi.\nSüre: {stopwatch.Elapsed:m\\:ss\\.fff}", "Başarılı");
                         }
                     }
                 }
                 catch (Exception ex)
                 {
                     stopwatch.Stop();
-                    MessageBox.Show($"Genel bir hata oluştu: {ex.Message}\n\nGeçen süre: {stopwatch.Elapsed:m\\:ss\\.fff}", "Kritik Hata", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    MessageBox.Show($"Genel hata: {ex.Message}\nSüre: {stopwatch.Elapsed:m\\:ss\\.fff}", "Kritik Hata");
                 }
                 finally
                 {
                     using (SqlCommand dropCmd = new SqlCommand($"IF OBJECT_ID('tempdb..{stagingTable}') IS NOT NULL DROP TABLE {stagingTable}", conn))
                         dropCmd.ExecuteNonQuery();
 
-                    lstTables_SelectedIndexChanged(null, null);
+                    // UI thread’te tabloyu yenile
+                    if (this.InvokeRequired)
+                        this.Invoke((MethodInvoker)(() => lstTables_SelectedIndexChanged(null, null)));
+                    else
+                        lstTables_SelectedIndexChanged(null, null);
                 }
             }
         }
 
-        
-        
         private void btnDownloadTemplate_Click(object sender, EventArgs e)
         {
             if (cmbDatabases.SelectedItem == null || lstTables.SelectedItem == null)
@@ -354,6 +381,10 @@ namespace ExcelToDB
                 }
             }
         }
-        
+
+        private void Form2_FormClosing(object sender, FormClosingEventArgs e)
+        {
+            Application.Exit();
+        }
     }
 }

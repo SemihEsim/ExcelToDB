@@ -45,9 +45,10 @@
             // 
             // btnClose
             // 
-            this.btnClose.Location = new System.Drawing.Point(0, 427);
+            this.btnClose.Dock = System.Windows.Forms.DockStyle.Bottom;
+            this.btnClose.Location = new System.Drawing.Point(0, 424);
             this.btnClose.Name = "btnClose";
-            this.btnClose.Size = new System.Drawing.Size(475, 26);
+            this.btnClose.Size = new System.Drawing.Size(800, 26);
             this.btnClose.TabIndex = 1;
             this.btnClose.Text = "Kapat";
             this.btnClose.UseVisualStyleBackColor = true;
